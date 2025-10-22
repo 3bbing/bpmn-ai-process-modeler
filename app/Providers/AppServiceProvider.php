@@ -28,7 +28,7 @@ class AppServiceProvider extends ServiceProvider
             $delayMs = (int) ($config['retry_delay_ms'] ?? 200);
 
             $handler->push(\GuzzleHttp\Middleware::retry(
-                function (int $retries, \Psr\Http\Message\RequestInterface $request, ?\Psr\Http\Message\ResponseInterface $response, ?\GuzzleHttp\Exception\RequestException $exception) use ($maxRetries, $retryableStatus) {
+                function (int $retries, \Psr\Http\Message\RequestInterface $request, ?\Psr\Http\Message\ResponseInterface $response, ?\Throwable $exception) use ($maxRetries, $retryableStatus) {
                     if ($retries >= $maxRetries) {
                         return false;
                     }
@@ -53,6 +53,7 @@ class AppServiceProvider extends ServiceProvider
             $httpClient = new \GuzzleHttp\Client([
                 'handler' => $handler,
                 'timeout' => (float) ($config['timeout'] ?? 60),
+                'connect_timeout' => (float) ($config['connect_timeout'] ?? 10),
             ]);
 
             $factory->withHttpClient($httpClient);

@@ -45,15 +45,19 @@ class TranscriptionService
         $payload = [
             'model' => config('services.openai.transcription_model'),
             'file' => $handle,
-            'response_format' => 'verbose_json',
         ];
+
+        $responseFormat = config('services.openai.transcription_response_format', 'json');
+        if ($responseFormat) {
+            $payload['response_format'] = $responseFormat;
+        }
 
         if ($language) {
             $payload['language'] = $language;
         }
 
         try {
-            $response = $this->client->audio()->transcriptions()->create($payload);
+            $response = $this->client->audio()->transcribe($payload);
         } catch (ErrorException $exception) {
             if (is_resource($handle)) {
                 fclose($handle);

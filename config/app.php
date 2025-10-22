@@ -13,6 +13,11 @@ return [
     'key' => env('APP_KEY'),
     'cipher' => 'AES-256-CBC',
 
+    'default_admin' => [
+        'email' => env('APP_DEFAULT_ADMIN_EMAIL'),
+        'password' => env('APP_DEFAULT_ADMIN_PASSWORD'),
+    ],
+
     'aliases' => [
         'App' => Illuminate\Support\Facades\App::class,
         'Arr' => Illuminate\Support\Arr::class,

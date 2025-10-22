@@ -19,22 +19,30 @@ class ProcessBookService
 
     public function generateDescriptions(Process $process, ProcessVersion $version): array
     {
+        $temperature = $this->preferredTemperature();
+        $maxTokens = (int) config('services.openai.chat_max_tokens_descriptions', 1200);
+
         try {
-            $response = $this->client->responses()->create([
+            $response = $this->client->chat()->create([
                 'model' => config('services.openai.llm_model'),
-                'input' => sprintf(
-                    "Erstelle kurze und lange Beschreibungen für Prozess %s (%s). BPMN XML: %s",
-                    $process->title,
-                    $process->level,
-                    Str::limit($version->bpmn_xml, 10000)
-                ),
+                'messages' => [
+                    ['role' => 'system', 'content' => 'You create concise and detailed process descriptions.'],
+                    ['role' => 'user', 'content' => sprintf(
+                        "Erstelle kurze und lange Beschreibungen für Prozess %s (%s). BPMN XML: %s",
+                        $process->title,
+                        $process->level,
+                        Str::limit($version->bpmn_xml, 10000)
+                    )],
+                ],
+                'temperature' => $temperature,
+                'max_completion_tokens' => $maxTokens,
             ]);
         } catch (ErrorException|TransporterException $exception) {
             throw new \RuntimeException('Description generation failed: '.$exception->getMessage(), $exception->getCode(), $exception);
         }
 
         $payload = $response->toArray();
-        $text = data_get($payload, 'output.0.content.0.text');
+        $text = data_get($payload, 'choices.0.message.content');
         $parts = explode('\n---\n', $text ?? '');
 
         return [
@@ -99,5 +107,17 @@ class ProcessBookService
     protected function storage(): Filesystem
     {
         return Storage::disk(config('filesystems.default', 'local'));
+    }
+
+    protected function preferredTemperature(): float
+    {
+        $model = config('services.openai.llm_model');
+        $temperature = (float) config('services.openai.chat_temperature_descriptions', 0.4);
+
+        if (str_starts_with($model, 'gpt-5')) {
+            return 1.0;
+        }
+
+        return $temperature;
     }
 }

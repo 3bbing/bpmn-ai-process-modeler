@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use GuzzleHttp\Exception\ConnectException;
+use Illuminate\Support\Facades\Log;
 use OpenAI\Contracts\ClientContract;
 use OpenAI\Exceptions\ErrorException;
 use OpenAI\Exceptions\TransporterException;
@@ -16,23 +18,118 @@ class ExtractionService
     {
         $prompt = $this->buildPrompt($text, $level, $domain);
 
+        $temperature = $this->preferredTemperature();
+        $maxTokens = (int) config('services.openai.chat_max_tokens', 1600);
+        $reasoningEffort = $this->reasoningEffortValue();
+
+        $model = config('services.openai.llm_model');
+        if (empty($model)) {
+            throw new \RuntimeException('OpenAI LLM model is not configured.');
+        }
+
+        $payload = [
+            'model' => $model,
+            'response_format' => [
+                'type' => 'json_schema',
+                'json_schema' => $this->schema(),
+            ],
+            'messages' => [
+                ['role' => 'system', 'content' => 'You are a BPMN-2.0 assistant. Return only valid JSON for the provided schema.'],
+                ['role' => 'user', 'content' => $prompt],
+            ],
+            'temperature' => $temperature,
+            'max_completion_tokens' => $maxTokens,
+        ];
+
+        if ($reasoningEffort) {
+            $payload['reasoning_effort'] = $reasoningEffort;
+        }
+
         try {
-            $response = $this->client->responses()->create([
-                'model' => config('services.openai.llm_model'),
-                'response_format' => [
-                    'type' => 'json_schema',
-                    'json_schema' => $this->schema(),
-                ],
-                'input' => $prompt,
-            ]);
+            $response = $this->client->chat()->create($payload);
+        } catch (ConnectException $exception) {
+            throw new \RuntimeException('OpenAI request timed out while generating the BPMN model.', 504, $exception);
         } catch (ErrorException|TransporterException $exception) {
             throw new \RuntimeException('Extraction failed: '.$exception->getMessage(), $exception->getCode(), $exception);
         }
 
         $payload = $response->toArray();
-        $content = data_get($payload, 'output.0.content.0.text');
 
-        return json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+        $finishReason = data_get($payload, 'choices.0.finish_reason');
+        if ($finishReason === 'length') {
+            Log::warning('OpenAI extraction truncated (length)', [
+                'usage' => data_get($payload, 'usage'),
+            ]);
+
+            throw new \RuntimeException('Extraction aborted because the output exceeded the model limit. Bitte Text kürzen oder den Prozess in kleinere Abschnitte teilen.');
+        }
+
+        $content = data_get($payload, 'choices.0.message.content');
+
+        if (is_array($content)) {
+            $content = collect($content)
+                ->map(function ($item) {
+                    if (is_string($item)) {
+                        return $item;
+                    }
+
+                    if (is_array($item) && isset($item['text'])) {
+                        return $item['text'];
+                    }
+
+                    return '';
+                })
+                ->implode("\n");
+        }
+
+        if (! is_string($content) || trim($content) === '') {
+            Log::warning('OpenAI extraction returned empty content', [
+                'payload' => $payload,
+            ]);
+
+            throw new \RuntimeException('Extraction failed: model returned empty response.');
+        }
+
+        $json = $this->extractJsonFrom($content);
+
+        try {
+            return json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            throw new \RuntimeException('Extraction returned invalid JSON: '.$json, previous: $exception);
+        }
+    }
+
+    protected function preferredTemperature(): float
+    {
+        $model = config('services.openai.llm_model');
+        $temperature = (float) config('services.openai.chat_temperature', 0.2);
+
+        if (str_starts_with($model, 'gpt-5')) {
+            return 1.0;
+        }
+
+        return $temperature;
+    }
+
+    protected function extractJsonFrom(string $content): string
+    {
+        $trimmed = trim($content);
+        if ($trimmed === '') {
+            return $trimmed;
+        }
+
+        if ($trimmed[0] === '{' && str_ends_with($trimmed, '}')) {
+            return $trimmed;
+        }
+
+        $start = strpos($trimmed, '{');
+        $end = strrpos($trimmed, '}');
+
+        if ($start === false || $end === false || $start > $end) {
+            return $trimmed;
+        }
+
+        return substr($trimmed, $start, $end - $start + 1);
     }
 
     protected function buildPrompt(string $text, string $level, ?string $domain): string
@@ -135,5 +232,16 @@ PROMPT;
                 'required' => ['lanes', 'tasks', 'events', 'flows'],
             ],
         ];
+    }
+    protected function reasoningEffortValue(): ?string
+    {
+        $model = config('services.openai.llm_model');
+        if (! str_starts_with($model, 'gpt-5')) {
+            return null;
+        }
+
+        $effort = config('services.openai.reasoning_effort');
+
+        return $effort ?: null;
     }
 }

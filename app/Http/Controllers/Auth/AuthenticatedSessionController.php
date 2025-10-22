@@ -3,13 +3,17 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 class AuthenticatedSessionController extends Controller
 {
-    public function store(Request $request): JsonResponse
+    public function create()
+    {
+        return view('auth.login');
+    }
+
+    public function store(Request $request)
     {
         $credentials = $request->validate([
             'email' => ['required', 'email'],
@@ -17,27 +21,41 @@ class AuthenticatedSessionController extends Controller
         ]);
 
         if (! Auth::attempt($credentials, $request->boolean('remember'))) {
-            return response()->json([
-                'message' => __('auth.failed'),
-            ], 422);
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'message' => __('auth.failed'),
+                ], 422);
+            }
+
+            return back()->withErrors([
+                'email' => __('auth.failed'),
+            ])->onlyInput('email');
         }
 
         $request->session()->regenerate();
 
-        return response()->json([
-            'user' => $request->user(),
-        ]);
+        if ($request->expectsJson()) {
+            return response()->json([
+                'user' => $request->user(),
+            ]);
+        }
+
+        return redirect()->intended(route('spa'));
     }
 
-    public function destroy(Request $request): JsonResponse
+    public function destroy(Request $request)
     {
         Auth::guard('web')->logout();
 
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return response()->json([
-            'message' => __('Logged out'),
-        ]);
+        if ($request->expectsJson()) {
+            return response()->json([
+                'message' => __('Logged out'),
+            ]);
+        }
+
+        return redirect()->route('login');
     }
 }
