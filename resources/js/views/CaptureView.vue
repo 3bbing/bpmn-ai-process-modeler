@@ -74,12 +74,29 @@
         </div>
       </div>
     </div>
+    <div v-if="savedProcess" class="capture__editor">
+      <header class="capture__editor-header">
+        <h3>{{ savedProcess.title }}</h3>
+        <span class="badge">{{ savedProcess.level }}</span>
+      </header>
+      <p class="capture__editor-hint">Der Entwurf wurde gespeichert und kann hier weiter bearbeitet oder im vollständigen Editor geöffnet werden.</p>
+      <div ref="editorRef" class="capture__editor-canvas"></div>
+      <div class="capture__editor-actions">
+        <button @click="saveEditorChanges" :disabled="editorSaving">{{ editorSaving ? 'Speichere…' : 'Änderungen speichern' }}</button>
+        <RouterLink v-if="editLink" :to="editLink" class="secondary">Im Editor öffnen</RouterLink>
+      </div>
+      <p v-if="editorMessage" class="info">{{ editorMessage }}</p>
+      <p v-if="editorError" class="error">{{ editorError }}</p>
+    </div>
   </section>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import BpmnModeler from 'bpmn-js/lib/Modeler';
 import http from '@/lib/http';
+import 'bpmn-js/dist/assets/diagram-js.css';
+import 'bpmn-js/dist/assets/bpmn-font/css/bpmn-embedded.css';
 
 const MAX_CHUNK_BYTES =
   Number(import.meta.env.VITE_UPLOAD_MAX_CHUNK_BYTES ?? 15 * 1024 * 1024) || 15 * 1024 * 1024;
@@ -106,6 +123,12 @@ const bpmnDownloadUrl = ref('');
 const isGenerating = ref(false);
 const processTitle = ref('');
 const level = ref('L4');
+const savedProcess = ref(null);
+const editorRef = ref(null);
+const modeler = ref(null);
+const editorSaving = ref(false);
+const editorMessage = ref('');
+const editorError = ref('');
 
 const extractionSummary = computed(() => {
   if (!extractionResult.value) {
@@ -119,6 +142,16 @@ const extractionSummary = computed(() => {
   };
 });
 
+const savedVersion = computed(() => {
+  if (!savedProcess.value?.versions?.length) {
+    return null;
+  }
+
+  return savedProcess.value.versions[0];
+});
+
+const editLink = computed(() => (savedProcess.value ? `/processes/${savedProcess.value.id}/edit` : null));
+
 watch([notes, level, processTitle], () => {
   if (isGenerating.value) {
     return;
@@ -127,6 +160,15 @@ watch([notes, level, processTitle], () => {
   extractionResult.value = null;
   bpmnXml.value = '';
   revokeBpmnDownloadUrl();
+  if (savedProcess.value) {
+    savedProcess.value = null;
+    if (modeler.value) {
+      modeler.value.destroy();
+      modeler.value = null;
+    }
+    editorMessage.value = '';
+    editorError.value = '';
+  }
   if (hadBpmn) {
     info.value = 'Inhalt wurde geändert. Bitte den BPMN-Entwurf erneut erzeugen.';
   }
@@ -267,6 +309,8 @@ async function generateFromText() {
     bpmnXml.value = bpmnResult.bpmn_xml;
     updateBpmnDownloadUrl(bpmnXml.value);
     info.value = 'BPMN-Entwurf erstellt. Du kannst ihn herunterladen oder im Editor weiterverarbeiten.';
+
+    await persistProcess();
   } catch (err) {
     const responseErrors = err?.response?.data?.errors;
     if (responseErrors) {
@@ -279,6 +323,76 @@ async function generateFromText() {
   }
 }
 
+async function persistProcess() {
+  if (!bpmnXml.value) {
+    return;
+  }
+
+  editorMessage.value = '';
+  editorError.value = '';
+
+  try {
+    const { data } = await http.post('/api/processes/auto', {
+      title: processTitle.value || deriveTitleFromText(notes.value) || 'Neuer Prozess',
+      level: level.value,
+      summary: notes.value.slice(0, 400),
+      transcript: notes.value,
+      bpmn_xml: bpmnXml.value,
+      extraction: extractionResult.value,
+    });
+
+    savedProcess.value = data.data ?? data;
+    await nextTick();
+    await initEditor();
+    editorMessage.value = 'Prozess gespeichert. Änderungen können direkt unten vorgenommen werden.';
+  } catch (err) {
+    editorError.value = err?.response?.data?.message ?? 'Speichern des Prozesses fehlgeschlagen.';
+  }
+}
+
+async function initEditor() {
+  if (!editorRef.value || !savedVersion.value) {
+    return;
+  }
+
+  if (!modeler.value) {
+    modeler.value = new BpmnModeler({ container: editorRef.value });
+  }
+
+  try {
+    await modeler.value.importXML(savedVersion.value.bpmn_xml ?? bpmnXml.value);
+  } catch (err) {
+    editorError.value = 'BPMN konnte nicht geladen werden.';
+  }
+}
+
+async function saveEditorChanges() {
+  if (!modeler.value || !savedVersion.value) {
+    return;
+  }
+
+  editorSaving.value = true;
+  editorError.value = '';
+  editorMessage.value = '';
+
+  try {
+    const { xml } = await modeler.value.saveXML({ format: true });
+    await http.patch(`/api/process-versions/${savedVersion.value.id}`, {
+      bpmn_xml: xml,
+      meta: {
+        extraction: extractionResult.value,
+      },
+    });
+
+    savedVersion.value.bpmn_xml = xml;
+    editorMessage.value = 'Entwurf aktualisiert.';
+  } catch (err) {
+    editorError.value = err?.response?.data?.message ?? 'Speichern der Änderungen fehlgeschlagen.';
+  } finally {
+    editorSaving.value = false;
+  }
+}
+
 onBeforeUnmount(() => {
   clearInterval(timer.value);
   if (isRecording.value && mediaRecorder.value) {
@@ -287,6 +401,10 @@ onBeforeUnmount(() => {
   stopStream();
   revokeDownloadUrl();
   revokeBpmnDownloadUrl();
+  if (modeler.value) {
+    modeler.value.destroy();
+    modeler.value = null;
+  }
 });
 
 function stopStream() {
@@ -598,6 +716,61 @@ button.secondary:disabled {
   background: rgba(203, 213, 245, 0.4);
   color: #94a3b8;
   border-color: #cbd5f5;
+}
+.capture__editor {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 1rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.capture__editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.capture__editor-canvas {
+  min-height: 380px;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.capture__editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.capture__editor-actions .secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.25rem;
+  border-radius: 9999px;
+  border: 1px solid #cbd5f5;
+  color: #0f172a;
+  text-decoration: none;
+  font-weight: 600;
+}
+.capture__editor-actions .secondary:hover {
+  background: rgba(37, 99, 235, 0.08);
+}
+.capture__editor-actions .secondary:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.3);
+}
+.capture__editor-hint {
+  margin: 0;
+  color: #475569;
+  font-size: 0.95rem;
+}
+.capture__editor .badge {
+  background: #22d3ee;
+  color: #0f172a;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-weight: 600;
 }
 .extraction-summary {
   background: #f8fafc;

@@ -33,6 +33,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/transcriptions', [TranscriptionController::class, 'store']);
     Route::post('/extract', [ExtractionController::class, 'store']);
     Route::post('/bpmn', [BpmnGenerationController::class, 'store']);
+    Route::post('/processes/auto', [ProcessController::class, 'storeGenerated']);
 
     Route::apiResource('processes', ProcessController::class);
     Route::post('processes/{process}/versions', [ProcessVersionController::class, 'store']);

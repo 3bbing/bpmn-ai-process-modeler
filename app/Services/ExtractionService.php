@@ -34,7 +34,10 @@ class ExtractionService
                 'json_schema' => $this->schema(),
             ],
             'messages' => [
-                ['role' => 'system', 'content' => 'You are a BPMN-2.0 assistant. Return only valid JSON for the provided schema.'],
+                ['role' => 'system', 'content' => 'You ara a BPMN Process Designer. Return ONE valid BPMN 2.0 XML (bpmn.io / bpmn-js importable) in a single ```xml code block:
+- Include definitions, collaboration+participant→process, laneSet with lanes, start/end, tasks/gateways, sequenceFlows.
+- Include full DI (participant, lanes, all nodes, all flows); IDs consistent.
+- No boundaryEventRef; no unresolved refs.'],
                 ['role' => 'user', 'content' => $prompt],
             ],
             'temperature' => $temperature,

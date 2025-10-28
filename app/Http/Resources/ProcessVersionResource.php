@@ -15,6 +15,7 @@ class ProcessVersionResource extends JsonResource
             'is_published' => $this->is_published,
             'status' => $this->status,
             'meta' => $this->meta,
+            'bpmn_xml' => $this->bpmn_xml,
             'created_at' => $this->created_at,
         ];
     }
